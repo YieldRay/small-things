@@ -3,6 +3,7 @@
   "compilerOptions": {
     "target": "esnext",
     "module": "nodenext",
+    "types": ["node"],
     "allowImportingTsExtensions": true,
     "rewriteRelativeImportExtensions": true,
     "verbatimModuleSyntax": true,

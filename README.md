@@ -1,4 +1,6 @@
-# nodejs-minimal-ts-template
+# small-things
+
+Small things served by [xmit dev team](https://xmit.dev/).
 
 A minimal TypeScript starter for Node.js (Node >= 22 and TypeScript >= 5.8).
 
