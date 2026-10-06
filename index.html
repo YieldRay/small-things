@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>small-things</title>
+    <!-- Landing page for the four client playgrounds. Serve the repo over HTTP
+         (e.g. `npx serve .`) and open / — the playgrounds live under src/. -->
+    <link href="https://raw.esm.sh/sheerly@0.0.5/lib/index.css" rel="stylesheet" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400&display=swap"
+      rel="stylesheet"
+    />
+    <script>
+      if (matchMedia("(prefers-color-scheme: dark)").matches) document.documentElement.classList.add("dark");
+    </script>
+    <style>
+      *, *::before, *::after { box-sizing: border-box; }
+      body {
+        background-color: var(--sheerly-background);
+        color: var(--sheerly-foreground);
+        font-family: var(--sheerly-font-sans);
+        margin: 0;
+      }
+      .page {
+        max-width: 880px;
+        margin: 0 auto;
+        padding: 2.5rem 1rem 4rem;
+        display: flex;
+        flex-direction: column;
+        gap: 1.5rem;
+      }
+      .row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+      .mono { font-family: var(--sheerly-font-mono); font-size: 0.8125rem; }
+      .muted { color: var(--sheerly-muted-foreground); font-size: 0.875rem; }
+      h1 { margin: 0; font-size: 1.75rem; font-weight: 600; letter-spacing: -0.02em; }
+      .header p { margin: 0.5rem 0 0; max-width: 46rem; }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+        gap: 1rem;
+      }
+      .sheerly-card-content p { margin: 0 0 1rem; font-size: 0.9375rem; line-height: 1.55; }
+      a.sheerly-button { text-decoration: none; }
+      code {
+        font-family: var(--sheerly-font-mono);
+        font-size: 0.8125rem;
+        background: var(--sheerly-muted);
+        padding: 0.125rem 0.375rem;
+        border-radius: calc(var(--sheerly-radius) - 2px);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <header class="header">
+        <div class="row">
+          <h1>small-things</h1>
+          <span class="sheerly-badge" data-variant="secondary">browser playgrounds</span>
+        </div>
+        <p class="muted">
+          Small TypeScript clients for small web services. Each module works in Node.js ≥ 22 and in the browser, ships
+          a CLI and tests, and has a no-build playground page — served straight from this directory, transpiled in the
+          browser with module-tsx and styled with sheerly.
+        </p>
+      </header>
+
+      <main class="grid">
+        <div class="sheerly-card">
+          <div class="sheerly-card-header">
+            <div class="sheerly-card-title">0pw</div>
+            <div class="sheerly-card-description">signed storage</div>
+          </div>
+          <div class="sheerly-card-content">
+            <p>
+              Up to 64 KiB of signed data per ed25519 key on
+              <a href="https://0pw.me/">0pw.me</a> — last write wins, storing null deletes. The playground also speaks
+              <a href="https://1pw.me/">1pw.me</a>'s encrypted password format end-to-end.
+            </p>
+            <div class="row">
+              <a class="sheerly-button" href="src/0pw/">Open playground</a>
+              <a class="muted mono" href="src/0pw/README.md">README</a>
+            </div>
+          </div>
+        </div>
+
+        <div class="sheerly-card">
+          <div class="sheerly-card-header">
+            <div class="sheerly-card-title">foundas</div>
+            <div class="sheerly-card-description">found.as publisher</div>
+          </div>
+          <div class="sheerly-card-content">
+            <p>
+              Publish pages on <a href="https://found.as/">found.as</a> through the
+              <a href="https://be.found.as/">be.found.as</a> API. The same address + password as the official editor,
+              every page type (redirect, markdown, HTML, file, contact), and custom domains.
+            </p>
+            <div class="row">
+              <a class="sheerly-button" href="src/foundas/">Open playground</a>
+              <a class="muted mono" href="src/foundas/README.md">README</a>
+            </div>
+          </div>
+        </div>
+
+        <div class="sheerly-card">
+          <div class="sheerly-card-header">
+            <div class="sheerly-card-title">libk</div>
+            <div class="sheerly-card-description">dynamic DNS</div>
+          </div>
+          <div class="sheerly-card-content">
+            <p>
+              Claim a <a href="https://www.libk.org/">libk.org</a> subdomain, protect it with a password, and point it
+              at one or more IPs — first come, first served. Password rotation included.
+            </p>
+            <div class="row">
+              <a class="sheerly-button" href="src/libk/">Open playground</a>
+              <a class="muted mono" href="src/libk/README.md">README</a>
+            </div>
+          </div>
+        </div>
+
+        <div class="sheerly-card">
+          <div class="sheerly-card-header">
+            <div class="sheerly-card-title">ccme</div>
+            <div class="sheerly-card-description">cc.me toolbox</div>
+          </div>
+          <div class="sheerly-card-content">
+            <p>
+              <a href="https://cc.me/">cc.me</a> in tabs: encrypted one-time secrets, favicons, the font catalog,
+              proof-of-work solving and checking, page screenshots, and the semaphore library.
+            </p>
+            <div class="row">
+              <a class="sheerly-button" href="src/ccme/">Open playground</a>
+              <a class="muted mono" href="src/ccme/README.md">README</a>
+            </div>
+          </div>
+        </div>
+      </main>
+
+      <footer class="muted">
+        Run <code>npx serve .</code> (or <code>python3 -m http.server</code>) in this directory and open
+        <code>/</code>. Each playground is also a single file — open <code>src/&lt;name&gt;/index.html</code> from any
+        static server.
+      </footer>
+    </div>
+  </body>
+</html>

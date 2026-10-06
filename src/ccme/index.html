@@ -1,0 +1,747 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ccme · small-things</title>
+    <!-- Browser playground for ./index.ts (the cc.me clients). Serve over HTTP so
+         module-tsx can fetch the module, e.g. `npx serve src` and open /ccme/. -->
+    <link href="https://raw.esm.sh/sheerly@0.0.5/lib/index.css" rel="stylesheet" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400&display=swap"
+      rel="stylesheet"
+    />
+    <script>
+      if (matchMedia("(prefers-color-scheme: dark)").matches) document.documentElement.classList.add("dark");
+    </script>
+    <script type="importmap">
+      {
+        "imports": {
+          "react": "https://esm.sh/react@19",
+          "react-dom": "https://esm.sh/react-dom@19",
+          "react-dom/": "https://esm.sh/react-dom@19/",
+          "sheerly": "https://esm.sh/sheerly@0.0.5?deps=react@19,react-dom@19",
+          "@noble/hashes/sha2.js": "https://esm.sh/@noble/hashes@2/sha2.js",
+          "@noble/ciphers/salsa.js": "https://esm.sh/@noble/ciphers@2/salsa.js"
+        }
+      }
+    </script>
+    <script type="module" src="https://esm.sh/module-tsx/dev"></script>
+    <style>
+      *, *::before, *::after { box-sizing: border-box; }
+      body {
+        background-color: var(--sheerly-background);
+        color: var(--sheerly-foreground);
+        font-family: var(--sheerly-font-sans);
+        margin: 0;
+      }
+      .page {
+        max-width: 760px;
+        margin: 0 auto;
+        padding: 2rem 1rem 4rem;
+        display: flex;
+        flex-direction: column;
+        gap: 1.25rem;
+      }
+      .row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+      .grow { flex: 1; min-width: 12rem; }
+      .stack { display: flex; flex-direction: column; gap: 0.75rem; }
+      .mono { font-family: var(--sheerly-font-mono); font-size: 0.8125rem; word-break: break-all; }
+      .muted { color: var(--sheerly-muted-foreground); font-size: 0.875rem; }
+      h1 { margin: 0; font-size: 1.5rem; font-weight: 600; letter-spacing: -0.02em; }
+      .header p { margin: 0.25rem 0 0; }
+      .icon-box {
+        width: 72px;
+        height: 72px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid var(--sheerly-border);
+        border-radius: var(--sheerly-radius);
+        background: var(--sheerly-muted);
+      }
+      .shot {
+        max-width: 100%;
+        border: 1px solid var(--sheerly-border);
+        border-radius: var(--sheerly-radius);
+      }
+      tr[data-clickable] { cursor: pointer; }
+      .sheerly-tabs-list { overflow-x: auto; min-width: 0; max-width: 100%; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module-tsx">
+      import { createRoot } from "react-dom/client";
+      import { useEffect, useState } from "react";
+      import {
+        Alert, AlertDescription, AlertTitle, Badge, Button, Card, CardContent,
+        CardDescription, CardHeader, CardTitle, Checkbox, Dialog, DialogClose,
+        DialogBody, DialogFooter, DialogHeader, DialogTitle, Input, Label,
+        Separator, Spinner, Table, TableContainer, Tabs, TabsList, TabsTrigger, Textarea,
+      } from "sheerly";
+      import { Favicons, Fonts, Library, Screenshots, Secrets, powLevel, solvePow } from "./index.ts";
+      import type { FontFamily, FontSearch, Lease, PoolState } from "./index.ts";
+
+      type Notice = { variant: "destructive" | "success" | "info"; title: string; text?: string } | null;
+
+      function NoticeAlert({ notice }: { notice: Notice }) {
+        if (notice === null) return null;
+        return (
+          <Alert data-variant={notice.variant}>
+            <AlertTitle>{notice.title}</AlertTitle>
+            {notice.text !== undefined && <AlertDescription>{notice.text}</AlertDescription>}
+          </Alert>
+        );
+      }
+
+      function useAction() {
+        const [notice, setNotice] = useState<Notice>(null);
+        const [busy, setBusy] = useState(false);
+        const run = async (fn: () => Promise<void>) => {
+          setBusy(true);
+          setNotice(null);
+          try {
+            await fn();
+          } catch (error) {
+            setNotice({ variant: "destructive", title: "Error", text: error instanceof Error ? error.message : String(error) });
+          } finally {
+            setBusy(false);
+          }
+        };
+        return { notice, setNotice, busy, run };
+      }
+
+      // ---------------------------------------------------------------------
+
+      function SecretTab() {
+        const { notice, setNotice, busy, run } = useAction();
+        const [plaintext, setPlaintext] = useState("");
+        const [expiresHours, setExpiresHours] = useState(24);
+        const [autoDestroy, setAutoDestroy] = useState(true);
+        const [created, setCreated] = useState<{ id: string; url: string } | null>(null);
+        const [openUrl, setOpenUrl] = useState("");
+        const [opened, setOpened] = useState<string | null>(null);
+        const [burnId, setBurnId] = useState("");
+
+        const create = () =>
+          run(async () => {
+            const secret = await new Secrets().create(plaintext, { expiresHours, autoDestroy });
+            setCreated(secret);
+            setOpenUrl(secret.url);
+            setNotice({ variant: "success", title: "Secret stored", text: "The key is in the URL fragment — it never reached the server." });
+          });
+
+        const open = () =>
+          run(async () => {
+            const bytes = await new Secrets().open(openUrl.trim());
+            setOpened(new TextDecoder().decode(bytes));
+          });
+
+        const burn = () =>
+          run(async () => {
+            await new Secrets().burn(burnId.trim());
+            setNotice({ variant: "success", title: "Burned" });
+          });
+
+        return (
+          <Card>
+            <CardHeader>
+              <CardTitle>Secrets</CardTitle>
+              <CardDescription>
+                Notes encrypted client-side (XSalsa20-Poly1305) and shared as a link; the key travels in the fragment.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="stack">
+              <NoticeAlert notice={notice} />
+              <Textarea placeholder="Type the secret…" value={plaintext} onChange={(e) => setPlaintext(e.target.value)} />
+              <div className="row">
+                <Label htmlFor="expires">Expires (hours)</Label>
+                <Input
+                  id="expires"
+                  type="number"
+                  style={{ width: "6rem" }}
+                  value={expiresHours}
+                  onChange={(e) => setExpiresHours(Number.isFinite(e.target.valueAsNumber) ? e.target.valueAsNumber : 24)}
+                />
+                <Checkbox id="ad" checked={autoDestroy} onChange={(e) => setAutoDestroy(e.target.checked)} />
+                <Label htmlFor="ad">Burn after first read</Label>
+                <Button onClick={create} disabled={busy || plaintext === ""}>
+                  {busy ? <Spinner data-size="sm" /> : null} Create
+                </Button>
+              </div>
+              {created !== null && (
+                <div className="stack">
+                  <Label>Share link</Label>
+                  <div className="mono">
+                    <a href={created.url}>{created.url}</a>
+                  </div>
+                  <div className="row">
+                    <Button
+                      data-variant="outline"
+                      data-size="sm"
+                      onClick={() => navigator.clipboard.writeText(created.url)}
+                    >
+                      Copy link
+                    </Button>
+                  </div>
+                </div>
+              )}
+              <Separator />
+              <div className="row">
+                <Input
+                  className="grow mono"
+                  placeholder="https://cc.me/p/<id>#<key>"
+                  value={openUrl}
+                  onChange={(e) => setOpenUrl(e.target.value)}
+                />
+                <Button data-variant="secondary" onClick={open} disabled={busy || openUrl.trim() === ""}>
+                  Open
+                </Button>
+              </div>
+              {opened !== null && (
+                <div className="stack">
+                  <Label>Plaintext</Label>
+                  <Textarea className="mono" readOnly value={opened} />
+                </div>
+              )}
+              <div className="row">
+                <Input
+                  className="grow mono"
+                  placeholder="secret id to burn"
+                  value={burnId}
+                  onChange={(e) => setBurnId(e.target.value)}
+                />
+                <Button data-variant="destructive" commandfor="$burn" command="show-modal" disabled={busy || burnId.trim() === ""}>
+                  Burn
+                </Button>
+                <Dialog id="$burn" closedby="any">
+                  <DialogClose commandfor="$burn" command="close" aria-label="Close" />
+                  <DialogHeader>
+                    <DialogTitle>Burn this secret?</DialogTitle>
+                  </DialogHeader>
+                  <DialogBody>
+                    The encrypted content is deleted immediately. Anyone opening the link afterwards finds it gone.
+                  </DialogBody>
+                  <DialogFooter>
+                    <Button data-variant="outline" commandfor="$burn" command="close">Cancel</Button>
+                    <Button data-variant="destructive" commandfor="$burn" command="close" onClick={burn}>Burn</Button>
+                  </DialogFooter>
+                </Dialog>
+              </div>
+            </CardContent>
+          </Card>
+        );
+      }
+
+      // ---------------------------------------------------------------------
+
+      function IconTab() {
+        const { notice, setNotice, busy, run } = useAction();
+        const [target, setTarget] = useState("https://github.com/");
+        const [imgUrl, setImgUrl] = useState<string | null>(null);
+
+        const show = () =>
+          run(async () => {
+            const url = new Favicons().iconUrl(new URL(target)).href;
+            setImgUrl(url);
+          });
+
+        const fetchBytes = () =>
+          run(async () => {
+            const icon = await new Favicons().get(new URL(target));
+            if (icon === null) {
+              setNotice({ variant: "info", title: "This origin has no favicon" });
+            } else {
+              setNotice({ variant: "success", title: "Fetched", text: `${icon.bytes.length} bytes, ${icon.contentType}` });
+            }
+          });
+
+        return (
+          <Card>
+            <CardHeader>
+              <CardTitle>Favicons</CardTitle>
+              <CardDescription>Any site's favicon, proxied and cacheable.</CardDescription>
+            </CardHeader>
+            <CardContent className="stack">
+              <NoticeAlert notice={notice} />
+              <div className="row">
+                <Input className="grow mono" value={target} onChange={(e) => setTarget(e.target.value)} />
+                <Button data-variant="secondary" onClick={show} disabled={busy || target.trim() === ""}>
+                  Show icon
+                </Button>
+                <Button data-variant="outline" onClick={fetchBytes} disabled={busy || target.trim() === ""}>
+                  {busy ? <Spinner data-size="sm" /> : null} Fetch bytes
+                </Button>
+              </div>
+              {imgUrl !== null && (
+                <div className="row">
+                  <div className="icon-box">
+                    <img
+                      key={imgUrl}
+                      src={imgUrl}
+                      alt="favicon"
+                      width={32}
+                      height={32}
+                      onError={() => setNotice({ variant: "info", title: "No favicon for this origin" })}
+                    />
+                  </div>
+                  <span className="muted mono">{imgUrl}</span>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        );
+      }
+
+      // ---------------------------------------------------------------------
+
+      function FontsTab() {
+        const { notice, setNotice, busy, run } = useAction();
+        const [q, setQ] = useState("");
+        const [results, setResults] = useState<FontSearch | null>(null);
+        const [family, setFamily] = useState<FontFamily | null>(null);
+        const fonts = new Fonts();
+
+        const search = () =>
+          run(async () => {
+            setFamily(null);
+            setResults(await fonts.search(q.trim() === "" ? {} : { q: q.trim() }));
+          });
+
+        const expand = (slug: string) =>
+          run(async () => {
+            setFamily(await fonts.family(slug));
+          });
+
+        return (
+          <Card>
+            <CardHeader>
+              <CardTitle>Fonts</CardTitle>
+              <CardDescription>Search the catalog; click a family for files and download links.</CardDescription>
+            </CardHeader>
+            <CardContent className="stack">
+              <NoticeAlert notice={notice} />
+              <div className="row">
+                <Input
+                  className="grow"
+                  placeholder="Search families, e.g. inter (empty lists all)"
+                  value={q}
+                  onChange={(e) => setQ(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && search()}
+                />
+                <Button onClick={search} disabled={busy}>
+                  {busy ? <Spinner data-size="sm" /> : null} Search
+                </Button>
+              </div>
+              {results !== null && (
+                <div className="stack">
+                  <span className="muted">
+                    {results.count} of {results.total} families
+                  </span>
+                  <TableContainer>
+                    <Table>
+                      <thead>
+                        <tr>
+                          <th>Name</th>
+                          <th>Category</th>
+                          <th>License</th>
+                          <th>Files</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {results.families.map((f) => (
+                          <tr data-clickable key={f.slug} onClick={() => expand(f.slug)}>
+                            <td>
+                              {f.name} {f.variable && <Badge data-variant="outline">variable</Badge>}
+                            </td>
+                            <td>{f.category}</td>
+                            <td>{f.license}</td>
+                            <td>{f.files.length}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </Table>
+                  </TableContainer>
+                </div>
+              )}
+              {family !== null && (
+                <div className="stack">
+                  <Separator />
+                  <div className="row">
+                    <strong>{family.name}</strong>
+                    <Badge data-variant="secondary">{family.category}</Badge>
+                    <span className="muted">{family.license} · {family.designer}</span>
+                  </div>
+                  {family.axes !== undefined && family.axes.length > 0 && (
+                    <div className="row">
+                      {family.axes.map((a) => (
+                        <Badge data-variant="outline" className="mono">
+                          {a.tag} {a.min}–{a.max}
+                        </Badge>
+                      ))}
+                    </div>
+                  )}
+                  <div className="stack">
+                    {family.files.map((f) => (
+                      <div className="row mono" key={f.filename}>
+                        <a href={fonts.fileUrl(family.slug, f.filename).href} target="_blank" rel="noreferrer">
+                          {f.filename}
+                        </a>
+                        <span className="muted">
+                          {f.style} {f.weight}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        );
+      }
+
+      // ---------------------------------------------------------------------
+
+      function ShotTab() {
+        const { notice, setNotice, busy, run } = useAction();
+        const [url, setUrl] = useState("https://example.com/");
+        const [width, setWidth] = useState(800);
+        const [height, setHeight] = useState(600);
+        const [shot, setShot] = useState<{ blobUrl: string; cached: boolean } | null>(null);
+
+        useEffect(() => () => {
+          if (shot !== null) URL.revokeObjectURL(shot.blobUrl);
+        }, [shot]);
+
+        const capture = () =>
+          run(async () => {
+            const result = await new Screenshots().capture({ url: new URL(url).href, width, height });
+            if (shot !== null) URL.revokeObjectURL(shot.blobUrl);
+            setShot({ blobUrl: URL.createObjectURL(new Blob([result.bytes], { type: "image/png" })), cached: result.cached });
+            setNotice({
+              variant: "success",
+              title: "Rendered",
+              text: `${result.bytes.length} bytes${result.cached ? ", served from the service cache" : ""}.`,
+            });
+          });
+
+        return (
+          <Card>
+            <CardHeader>
+              <CardTitle>Screenshots</CardTitle>
+              <CardDescription>
+                Render a public page to PNG. The client solves the required proof of work locally first — that takes a
+                few seconds and blocks the tab.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="stack">
+              <NoticeAlert notice={notice} />
+              <div className="row">
+                <Input className="grow mono" value={url} onChange={(e) => setUrl(e.target.value)} />
+              </div>
+              <div className="row">
+                <Label htmlFor="w">Width</Label>
+                <Input
+                  id="w"
+                  type="number"
+                  style={{ width: "6rem" }}
+                  value={width}
+                  onChange={(e) => setWidth(Number.isFinite(e.target.valueAsNumber) ? e.target.valueAsNumber : 800)}
+                />
+                <Label htmlFor="h">Height</Label>
+                <Input
+                  id="h"
+                  type="number"
+                  style={{ width: "6rem" }}
+                  value={height}
+                  onChange={(e) => setHeight(Number.isFinite(e.target.valueAsNumber) ? e.target.valueAsNumber : 600)}
+                />
+                <Button onClick={capture} disabled={busy || url.trim() === ""}>
+                  {busy ? <Spinner data-size="sm" /> : null} Capture
+                </Button>
+              </div>
+              {shot !== null && (
+                <div className="stack">
+                  <div className="row">
+                    <Badge data-variant={shot.cached ? "secondary" : "outline"}>{shot.cached ? "cache hit" : "fresh render"}</Badge>
+                  </div>
+                  <img className="shot" src={shot.blobUrl} alt="screenshot" />
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        );
+      }
+
+      // ---------------------------------------------------------------------
+
+      function PowTab() {
+        const { notice, setNotice, busy, run } = useAction();
+        const [doc, setDoc] = useState("hello world");
+        const [level, setLevel] = useState(16);
+        const [solved, setSolved] = useState<{ token: string; ms: number; level: number } | null>(null);
+        const [checkToken, setCheckToken] = useState("");
+        const [checked, setChecked] = useState<number | null>(null);
+
+        const solve = () =>
+          run(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 50)); // let the spinner paint before blocking
+            const start = performance.now();
+            const token = solvePow(doc, level);
+            const ms = performance.now() - start;
+            setSolved({ token, ms: Math.round(ms), level: powLevel(token) });
+            setNotice({ variant: "success", title: "Solved", text: "The token proves at least the requested level." });
+          });
+
+        const check = () =>
+          run(async () => {
+            setChecked(powLevel(checkToken.trim()));
+          });
+
+        return (
+          <Card>
+            <CardHeader>
+              <CardTitle>Proof of work</CardTitle>
+              <CardDescription>
+                A token is b64u(doc).b64u(suffix); its level is the trailing zero bits of
+                SHA-256(SHA-256(doc)‖suffix). Expected cost is 2^level double hashes — keep it at 20 or below here.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="stack">
+              <NoticeAlert notice={notice} />
+              <div className="row">
+                <Input className="grow mono" value={doc} onChange={(e) => setDoc(e.target.value)} />
+                <Label htmlFor="level">Level</Label>
+                <Input
+                  id="level"
+                  type="number"
+                  style={{ width: "6rem" }}
+                  value={level}
+                  onChange={(e) => setLevel(Number.isFinite(e.target.valueAsNumber) ? e.target.valueAsNumber : 0)}
+                />
+                <Button onClick={solve} disabled={busy || doc === ""}>
+                  {busy ? <Spinner data-size="sm" /> : null} Solve
+                </Button>
+              </div>
+              {solved !== null && (
+                <div className="stack">
+                  <Textarea className="mono" readOnly value={solved.token} />
+                  <div className="row">
+                    <Badge data-variant="secondary">level {solved.level}</Badge>
+                    <span className="muted">{solved.ms} ms</span>
+                  </div>
+                </div>
+              )}
+              <Separator />
+              <div className="row">
+                <Input
+                  className="grow mono"
+                  placeholder="paste a token to measure its exact level"
+                  value={checkToken}
+                  onChange={(e) => setCheckToken(e.target.value)}
+                />
+                <Button data-variant="secondary" onClick={check} disabled={busy || checkToken.trim() === ""}>
+                  Check
+                </Button>
+                {checked !== null && <Badge data-variant="outline">level {checked}</Badge>}
+              </div>
+            </CardContent>
+          </Card>
+        );
+      }
+
+      // ---------------------------------------------------------------------
+
+      function LibTab() {
+        const { notice, setNotice, busy, run } = useAction();
+        const [id, setId] = useState(() => crypto.randomUUID());
+        const [count, setCount] = useState(2);
+        const [pool, setPool] = useState<PoolState | null>(null);
+        const [ttl, setTtl] = useState(60);
+        const [wait, setWait] = useState(0);
+        const [lease, setLease] = useState<Lease | null>(null);
+
+        const library = () => new Library({ id: id.trim() });
+
+        const register = () =>
+          run(async () => {
+            setPool(await library().register(count));
+            setNotice({ variant: "success", title: "Pool registered", text: "Keep the id secret — it is the only credential." });
+          });
+
+        const inspect = () =>
+          run(async () => {
+            setPool(await library().inspect());
+          });
+
+        const borrow = () =>
+          run(async () => {
+            const result = await library().borrow({ ttl, wait });
+            setLease(result);
+            setPool(await library().inspect());
+            if (result === null) setNotice({ variant: "info", title: "Pool exhausted", text: "No permit freed up in time." });
+          });
+
+        const returnLease = () =>
+          run(async () => {
+            if (lease === null) throw new Error("borrow a permit first");
+            const returned = await library().returnLease(lease.lease);
+            setPool(await library().inspect());
+            setLease(null);
+            setNotice({
+              variant: returned ? "success" : "info",
+              title: returned ? "Returned" : "Already returned or expired",
+            });
+          });
+
+        const remove = () =>
+          run(async () => {
+            await library().delete();
+            setPool(null);
+            setLease(null);
+            setNotice({ variant: "success", title: "Pool deleted" });
+          });
+
+        return (
+          <Card>
+            <CardHeader>
+              <CardTitle>Library</CardTitle>
+              <CardDescription>A distributed semaphore: register a pool, borrow permits, return them early.</CardDescription>
+            </CardHeader>
+            <CardContent className="stack">
+              <NoticeAlert notice={notice} />
+              <div className="row">
+                <Input className="grow mono" value={id} onChange={(e) => setId(e.target.value)} />
+                <Label htmlFor="count">Slots</Label>
+                <Input
+                  id="count"
+                  type="number"
+                  style={{ width: "6rem" }}
+                  value={count}
+                  onChange={(e) => setCount(Number.isFinite(e.target.valueAsNumber) ? e.target.valueAsNumber : 1)}
+                />
+              </div>
+              <div className="row">
+                <Button onClick={register} disabled={busy}>
+                  {busy ? <Spinner data-size="sm" /> : null} Register
+                </Button>
+                <Button data-variant="secondary" onClick={inspect} disabled={busy}>
+                  Inspect
+                </Button>
+                <Button data-variant="destructive" commandfor="$pool-delete" command="show-modal" disabled={busy}>
+                  Delete
+                </Button>
+                <Dialog id="$pool-delete" closedby="any">
+                  <DialogClose commandfor="$pool-delete" command="close" aria-label="Close" />
+                  <DialogHeader>
+                    <DialogTitle>Delete this pool?</DialogTitle>
+                  </DialogHeader>
+                  <DialogBody>
+                    The pool record is removed and its id stops resolving. There is no undo.
+                  </DialogBody>
+                  <DialogFooter>
+                    <Button data-variant="outline" commandfor="$pool-delete" command="close">Cancel</Button>
+                    <Button data-variant="destructive" commandfor="$pool-delete" command="close" onClick={remove}>Delete</Button>
+                  </DialogFooter>
+                </Dialog>
+              </div>
+              {pool !== null && (
+                <div className="row">
+                  <Badge data-variant="secondary" className="mono">{pool.available} free</Badge>
+                  <Badge data-variant="outline" className="mono">{pool.in_use} in use</Badge>
+                  <Badge data-variant="outline" className="mono">{pool.count} slots</Badge>
+                </div>
+              )}
+              <Separator />
+              <div className="row">
+                <Label htmlFor="ttl">TTL (s)</Label>
+                <Input
+                  id="ttl"
+                  type="number"
+                  style={{ width: "6rem" }}
+                  value={ttl}
+                  onChange={(e) => setTtl(Number.isFinite(e.target.valueAsNumber) ? e.target.valueAsNumber : 60)}
+                />
+                <Label htmlFor="wait">Wait (s)</Label>
+                <Input
+                  id="wait"
+                  type="number"
+                  style={{ width: "6rem" }}
+                  value={wait}
+                  onChange={(e) => setWait(Number.isFinite(e.target.valueAsNumber) ? e.target.valueAsNumber : 0)}
+                />
+                <Button data-variant="secondary" onClick={borrow} disabled={busy}>
+                  Borrow
+                </Button>
+                <Button data-variant="outline" onClick={returnLease} disabled={busy || lease === null}>
+                  Return
+                </Button>
+              </div>
+              {lease !== null && (
+                <div className="stack">
+                  <div className="row">
+                    <Badge data-variant="secondary">position {lease.position}</Badge>
+                    <span className="muted">expires in {lease.expires_in}s</span>
+                  </div>
+                  <div className="mono">{lease.lease}</div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        );
+      }
+
+      // ---------------------------------------------------------------------
+
+      const TABS = [
+        { id: "secret", label: "Secrets" },
+        { id: "icon", label: "Favicons" },
+        { id: "fonts", label: "Fonts" },
+        { id: "shot", label: "Screenshots" },
+        { id: "pow", label: "Proof of work" },
+        { id: "lib", label: "Library" },
+      ] as const;
+      type TabId = (typeof TABS)[number]["id"];
+
+      function App() {
+        const [tab, setTab] = useState<TabId>("secret");
+        return (
+          <div className="page">
+            <header className="header">
+              <div className="row">
+                <h1>cc.me toolbox</h1>
+                <Badge data-variant="secondary">small-things</Badge>
+              </div>
+              <p className="muted">
+                Secrets, favicons, fonts, screenshots, proof of work, and the semaphore library from{" "}
+                <a href="https://cc.me/">cc.me</a>.
+              </p>
+            </header>
+            <Tabs>
+              <TabsList>
+                {TABS.map((t) => (
+                  <TabsTrigger
+                    key={t.id}
+                    data-state={tab === t.id ? "active" : undefined}
+                    onClick={() => setTab(t.id)}
+                  >
+                    {t.label}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </Tabs>
+            {tab === "secret" && <SecretTab />}
+            {tab === "icon" && <IconTab />}
+            {tab === "fonts" && <FontsTab />}
+            {tab === "shot" && <ShotTab />}
+            {tab === "pow" && <PowTab />}
+            {tab === "lib" && <LibTab />}
+          </div>
+        );
+      }
+
+      createRoot(document.getElementById("root")!).render(<App />);
+    </script>
+  </body>
+</html>

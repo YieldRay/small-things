@@ -1,0 +1,596 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>foundas · small-things</title>
+    <!-- Browser playground for ./index.ts (FoundAs). Serve over HTTP so module-tsx
+         can fetch the module, e.g. `npx serve src` and open /foundas/. -->
+    <link href="https://raw.esm.sh/sheerly@0.0.5/lib/index.css" rel="stylesheet" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400&display=swap"
+      rel="stylesheet"
+    />
+    <script>
+      if (matchMedia("(prefers-color-scheme: dark)").matches) document.documentElement.classList.add("dark");
+    </script>
+    <script type="importmap">
+      {
+        "imports": {
+          "react": "https://esm.sh/react@19",
+          "react-dom": "https://esm.sh/react-dom@19",
+          "react-dom/": "https://esm.sh/react-dom@19/",
+          "sheerly": "https://esm.sh/sheerly@0.0.5?deps=react@19,react-dom@19",
+          "@noble/ed25519": "https://esm.sh/@noble/ed25519@3",
+          "@noble/hashes/sha2.js": "https://esm.sh/@noble/hashes@2/sha2.js",
+          "cbor-x": "https://esm.sh/cbor-x@1",
+          "marked": "https://esm.sh/marked@15"
+        }
+      }
+    </script>
+    <script type="module" src="https://esm.sh/module-tsx/dev"></script>
+    <style>
+      *, *::before, *::after { box-sizing: border-box; }
+      body {
+        background-color: var(--sheerly-background);
+        color: var(--sheerly-foreground);
+        font-family: var(--sheerly-font-sans);
+        margin: 0;
+      }
+      .page {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 2rem 1rem 4rem;
+        display: flex;
+        flex-direction: column;
+        gap: 1.25rem;
+      }
+      .row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+      .grow { flex: 1; min-width: 12rem; }
+      .stack { display: flex; flex-direction: column; gap: 0.75rem; }
+      .mono { font-family: var(--sheerly-font-mono); font-size: 0.8125rem; word-break: break-all; }
+      .muted { color: var(--sheerly-muted-foreground); font-size: 0.875rem; }
+      h1 { margin: 0; font-size: 1.5rem; font-weight: 600; letter-spacing: -0.02em; }
+      .header p { margin: 0.25rem 0 0; }
+      input[type="file"] {
+        font-family: var(--sheerly-font-sans);
+        font-size: 0.875rem;
+        max-width: 100%;
+      }
+      .sheerly-tabs-list { overflow-x: auto; min-width: 0; max-width: 100%; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module-tsx">
+      import { createRoot } from "react-dom/client";
+      import { useState } from "react";
+      import {
+        Alert, AlertDescription, AlertTitle, Badge, Button, Card, CardContent,
+        CardDescription, CardHeader, CardTitle, Input, Label, Select,
+        Separator, Spinner, Textarea,
+      } from "sheerly";
+      import { FoundAs, deriveKeyPair, base64UrlEncode, PageType } from "./index.ts";
+      import type { DomainStatus, KeyPair, PageState } from "./index.ts";
+      import { marked } from "marked";
+
+      type Notice = { variant: "destructive" | "success" | "info"; title: string; text?: string } | null;
+      type Kind = "redirect" | "markdown" | "html" | "file" | "contact";
+      type Probe = "unlocked" | "available" | null;
+      type ContactLink = { label: string; url: string };
+
+      // be.found.as sends no CORS headers, so browsers block direct calls.
+      // proxy.scalar.com forwards the request and adds permissive headers.
+      const PROXY_BASE = "https://proxy.scalar.com/?scalar_url=";
+      const scalarProxyFetch = (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+        const url = input instanceof URL ? input.href : typeof input === "string" ? input : input.url;
+        return fetch(PROXY_BASE + encodeURIComponent(url), init);
+      };
+
+      const MAX_FILE_SIZE = 5 * 1024 * 1024; // same limit as the official editor
+
+      const escapeHtml = (s: string): string =>
+        s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+
+      // The public bundle of a markdown page is rendered HTML; the official
+      // editor keeps the source in state.md and renders its own template.
+      const markdownHtml = (source: string): string =>
+        `<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<body style="font-family:system-ui,sans-serif;max-width:42rem;margin:3rem auto;padding:0 1rem;line-height:1.6">
+${marked.parse(source) as string}
+</body>`;
+
+      // Contact-page links follow the official editor's item schema so the
+      // official UI can keep editing them (kind/value/label, href computed at
+      // render time).
+      const toOfficialLink = ({ label, url }: ContactLink) => ({
+        id: crypto.randomUUID(),
+        kind: "website",
+        label: label.trim() || "Website",
+        value: url.trim(),
+        href: "",
+        enabled: true,
+        icon: "🌐",
+      });
+
+      const contactHtml = (name: string, bio: string, links: ContactLink[]): string => {
+        const items = links
+          .filter((l) => l.url.trim() !== "")
+          .map(
+            (l) =>
+              `<a href="${escapeHtml(l.url.trim())}" style="display:block;padding:.7rem 1rem;margin:.5rem 0;border:1px solid #ccc;border-radius:10px;text-decoration:none;color:inherit">${escapeHtml(l.label.trim() || l.url.trim())}</a>`,
+          )
+          .join("\n");
+        return `<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeHtml(name || "Contact")}</title>
+<body style="font-family:system-ui,sans-serif;max-width:30rem;margin:3rem auto;padding:0 1rem;line-height:1.5">
+<h1 style="font-size:1.5rem;margin:0 0 .25rem">${escapeHtml(name)}</h1>
+${bio.trim() !== "" ? `<p style="color:#666;margin:0 0 1.5rem">${escapeHtml(bio)}</p>` : ""}
+${items}
+</body>`;
+      };
+
+      const TYPE_LABELS = new Map<number, string>([
+        [PageType.HtmlPage, "HTML page"],
+        [PageType.MarkdownPage, "Markdown page"],
+        [PageType.Redirect, "Redirect"],
+        [PageType.Bytes, "File"],
+        [PageType.LinkTree, "Contact page"],
+      ]);
+
+      function App() {
+        const [slug, setSlug] = useState("");
+        const [password, setPassword] = useState("");
+        const [keyPair, setKeyPair] = useState<KeyPair | null>(null);
+        const [probe, setProbe] = useState<Probe>(null);
+        const [loaded, setLoaded] = useState<PageState | null>(null);
+        const [kind, setKind] = useState<Kind>("redirect");
+        const [redir, setRedir] = useState("https://example.com/");
+        const [md, setMd] = useState("# hello\n\na markdown page on found.as");
+        const [html, setHtml] = useState("<h1>hello from found.as</h1>");
+        const [file, setFile] = useState<File | null>(null);
+        const [contactName, setContactName] = useState("");
+        const [contactBio, setContactBio] = useState("");
+        const [contactLinks, setContactLinks] = useState<ContactLink[]>([{ label: "Website", url: "https://" }]);
+        const [domainInput, setDomainInput] = useState("");
+        const [domains, setDomains] = useState<string[] | null>(null);
+        const [domainStatus, setDomainStatus] = useState<Record<string, DomainStatus>>({});
+        const [notice, setNotice] = useState<Notice>(null);
+        const [busy, setBusy] = useState<string | null>(null);
+
+        // Changing anything the key or probe depends on invalidates the session.
+        const resetSession = () => {
+          setKeyPair(null);
+          setProbe(null);
+          setLoaded(null);
+          setDomains(null);
+          setDomainStatus({});
+        };
+
+        const editorSeed = keyPair !== null ? base64UrlEncode(keyPair.secretKey.subarray(0, 32)) : null;
+        const editorUrl = `https://be.found.as/${slug.trim() || "your-slug"}#${editorSeed ?? ""}`;
+        const pageUrl = `https://found.as/${slug.trim()}`;
+
+        async function run(label: string, fn: () => Promise<void>): Promise<void> {
+          setBusy(label);
+          setNotice(null);
+          try {
+            await fn();
+          } catch (error) {
+            setNotice({ variant: "destructive", title: "Error", text: error instanceof Error ? error.message : String(error) });
+          } finally {
+            setBusy(null);
+          }
+        }
+
+        // Derive the key from address + password, the same way the official
+        // editor does, then probe the address with it (load = op 2).
+        const open = () =>
+          run("open", async () => {
+            const address = slug.trim();
+            if (address === "") throw new Error("enter an address first");
+            const key = await deriveKeyPair(address, password);
+            const client = new FoundAs({ keyPair: key, fetch: scalarProxyFetch });
+            try {
+              const state = await client.load(address);
+              setKeyPair(key);
+              setProbe(state === null ? "available" : "unlocked");
+              setLoaded(state);
+              try {
+                setDomains(await client.listDomains(address));
+              } catch {
+                setDomains(null);
+              }
+              setNotice(
+                state === null
+                  ? { variant: "info", title: "Address available", text: "Publishing will claim it under this password." }
+                  : { variant: "success", title: "Unlocked", text: "Loaded the stored page state." },
+              );
+            } catch (error) {
+              resetSession();
+              const message = error instanceof Error ? error.message : String(error);
+              if (/HTTP 4\d\d/.test(message)) {
+                throw new Error("This address exists, but the password (or key) doesn't match it.");
+              }
+              throw error;
+            }
+          });
+
+        const pickFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+          const picked = e.target.files?.[0] ?? null;
+          if (picked !== null && picked.size > MAX_FILE_SIZE) {
+            setFile(null);
+            e.target.value = "";
+            setNotice({ variant: "destructive", title: "That file is over 5MB. Choose a smaller file." });
+            return;
+          }
+          setFile(picked);
+        };
+
+        const publish = () =>
+          run("publish", async () => {
+            const address = slug.trim();
+            if (keyPair === null) throw new Error("open the address first");
+            const client = new FoundAs({ keyPair, fetch: scalarProxyFetch });
+            let state: PageState;
+            if (kind === "redirect") {
+              new URL(redir); // validate
+              state = { type: PageType.Redirect, redir };
+              await client.publish(address, state, { redir });
+            } else if (kind === "markdown") {
+              state = { type: PageType.MarkdownPage, md };
+              await client.publish(address, state, { html: markdownHtml(md) });
+            } else if (kind === "html") {
+              state = { type: PageType.HtmlPage, html };
+              await client.publish(address, state, { html });
+            } else if (kind === "contact") {
+              const links = contactLinks.filter((l) => l.url.trim() !== "");
+              const linkTree = { displayName: contactName, bio: contactBio, theme: "system", links: links.map(toOfficialLink) };
+              state = { type: PageType.LinkTree, linkTree };
+              await client.publish(address, state, { html: contactHtml(contactName, contactBio, links) });
+            } else {
+              if (file === null) throw new Error("choose a file first");
+              state = { type: PageType.Bytes };
+              const bytes = new Uint8Array(await file.arrayBuffer());
+              await client.publish(address, state, { bytes, mime: file.type });
+            }
+            setProbe("unlocked");
+            setLoaded(state);
+            setNotice({
+              variant: "success",
+              title: "Published",
+              text: `Live at ${pageUrl} — the official editor at be.found.as/${address} unlocks with the same password.`,
+            });
+          });
+
+        // Same flow as the official UI: status first, and only map once the
+        // domain's DNS already points at the service (else the server 409s).
+        const addDomain = () =>
+          run("domain", async () => {
+            const address = slug.trim();
+            if (keyPair === null) throw new Error("open the address first");
+            const domain = domainInput.trim().toLowerCase();
+            if (!/^([a-z0-9-]+\.)+[a-z]{2,}$/.test(domain)) throw new Error("enter a domain like yourname.com");
+            const client = new FoundAs({ keyPair, fetch: scalarProxyFetch });
+            const status = await client.domainStatus(address, domain);
+            if (status.conflict) throw new Error("This domain is already connected to another page.");
+            if (status.mapped && status.cert) {
+              setNotice({ variant: "info", title: "Already live", text: `${domain} is already connected and secured.` });
+            } else if (status.mapped || (status.bound && status.reachable)) {
+              if (!status.mapped) await client.mapDomain(address, domain);
+              setNotice({ variant: "success", title: "Domain connected", text: "DNS checks out — the certificate is being secured." });
+            } else {
+              setNotice({ variant: "info", title: "Waiting for DNS", text: `Point ${domain} at the target shown below, then check status.` });
+            }
+            setDomainInput("");
+            setDomainStatus((s) => ({ ...s, [domain]: status }));
+            setDomains((current) => [...new Set([...(current ?? []), domain])]);
+          });
+
+        const refreshDomain = (domain: string) =>
+          run("domain", async () => {
+            if (keyPair === null) throw new Error("open the address first");
+            const client = new FoundAs({ keyPair, fetch: scalarProxyFetch });
+            const status = await client.domainStatus(slug.trim(), domain);
+            setDomainStatus((s) => ({ ...s, [domain]: status }));
+          });
+
+        const removeDomain = (domain: string) =>
+          run("domain", async () => {
+            if (keyPair === null) throw new Error("open the address first");
+            const client = new FoundAs({ keyPair, fetch: scalarProxyFetch });
+            const status = await client.domainStatus(slug.trim(), domain);
+            if (status.mapped) await client.unmapDomain(slug.trim(), domain);
+            setDomains((current) => (current ?? []).filter((d) => d !== domain));
+            setDomainStatus((s) => {
+              const next = { ...s };
+              delete next[domain];
+              return next;
+            });
+            setNotice({ variant: "success", title: "Domain removed" });
+          });
+
+        const publishDisabled = busy !== null || keyPair === null || slug.trim() === "" ||
+          (kind === "redirect" && redir.trim() === "") ||
+          (kind === "markdown" && md.trim() === "") ||
+          (kind === "html" && html === "") ||
+          (kind === "contact" && contactName.trim() === "") ||
+          (kind === "file" && file === null);
+
+        return (
+          <div className="page">
+            <header className="header">
+              <div className="row">
+                <h1>foundas</h1>
+                <Badge data-variant="secondary">found.as publisher</Badge>
+              </div>
+              <p className="muted">
+                Publish pages on <a href="https://found.as/">found.as</a> through the{" "}
+                <a href="https://be.found.as/">be.found.as</a> API. Address + password open a page, exactly like the
+                official editor. API calls go through proxy.scalar.com because be.found.as sends no CORS headers.
+              </p>
+            </header>
+
+            {notice !== null && (
+              <Alert data-variant={notice.variant}>
+                <AlertTitle>{notice.title}</AlertTitle>
+                {notice.text !== undefined && <AlertDescription>{notice.text}</AlertDescription>}
+              </Alert>
+            )}
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Address &amp; key</CardTitle>
+                <CardDescription>
+                  The password is the same one the official be.found.as editor uses: address + password derive the page
+                  key locally (PBKDF2-SHA256, 100 000 rounds, salt found.as/your-address) and never leave this page.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="stack">
+                <div className="stack">
+                  <Label htmlFor="slug">Address</Label>
+                  <div className="row">
+                    <Input
+                      id="slug"
+                      className="grow"
+                      placeholder="my-page"
+                      value={slug}
+                      onChange={(e) => {
+                        setSlug(e.target.value);
+                        resetSession();
+                      }}
+                    />
+                    {slug.trim() !== "" && <span className="muted mono">found.as/{slug.trim()}</span>}
+                  </div>
+                </div>
+
+                <div className="row">
+                  <div className="grow stack">
+                    <Label htmlFor="password">Password (same as the official editor)</Label>
+                    <Input
+                      id="password"
+                      type="password"
+                      placeholder="page password — blank means anyone can edit"
+                      value={password}
+                      onChange={(e) => {
+                        setPassword(e.target.value);
+                        resetSession();
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div className="row">
+                  <Button onClick={open} disabled={busy !== null || slug.trim() === ""}>
+                    {busy === "open" ? <Spinner data-size="sm" /> : null} Open address
+                  </Button>
+                  {probe === "unlocked" && <Badge data-variant="success">unlocked — existing page</Badge>}
+                  {probe === "available" && <Badge data-variant="secondary">available — claimed on publish</Badge>}
+                </div>
+
+                {keyPair !== null && (
+                  <div className="stack">
+                    <Label>Public key (base64url)</Label>
+                    <div className="mono">{base64UrlEncode(keyPair.publicKey)}</div>
+                    <Label>Editor link (carries the seed)</Label>
+                    <div className="mono">
+                      <a href={editorUrl}>{editorUrl}</a>
+                    </div>
+                  </div>
+                )}
+
+                {loaded !== null && (
+                  <div className="stack">
+                    <div className="row">
+                      <Label>Stored state</Label>
+                      <Badge data-variant="outline">
+                        {TYPE_LABELS.get(loaded.type) ?? `type ${loaded.type}`}
+                      </Badge>
+                    </div>
+                    <Textarea className="mono" readOnly rows={8} value={JSON.stringify(loaded, null, 2)} />
+                    {loaded.type === PageType.Bytes && (
+                      <span className="muted">The file itself is served at {pageUrl}.</span>
+                    )}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Publish</CardTitle>
+                <CardDescription>Last write wins. The page goes live at found.as/address.</CardDescription>
+              </CardHeader>
+              <CardContent className="stack">
+                <div className="row">
+                  <Label htmlFor="kind">Page type</Label>
+                  <Select id="kind" value={kind} onChange={(e) => setKind(e.target.value as Kind)}>
+                    <option value="redirect">Redirect</option>
+                    <option value="markdown">Markdown</option>
+                    <option value="html">HTML page</option>
+                    <option value="file">File</option>
+                    <option value="contact">Contact page</option>
+                  </Select>
+                </div>
+
+                {kind === "redirect" && (
+                  <Input
+                    className="mono"
+                    placeholder="https://destination.example/"
+                    value={redir}
+                    onChange={(e) => setRedir(e.target.value)}
+                  />
+                )}
+
+                {kind === "markdown" && (
+                  <div className="stack">
+                    <Textarea className="mono" rows={8} value={md} onChange={(e) => setMd(e.target.value)} />
+                    <span className="muted">Rendered to HTML when published; the official editor keeps the source.</span>
+                  </div>
+                )}
+
+                {kind === "html" && <Textarea className="mono" value={html} onChange={(e) => setHtml(e.target.value)} />}
+
+                {kind === "contact" && (
+                  <div className="stack">
+                    <div className="stack">
+                      <Label htmlFor="cname">Display name</Label>
+                      <Input id="cname" placeholder="Ada Lovelace" value={contactName} onChange={(e) => setContactName(e.target.value)} />
+                    </div>
+                    <div className="stack">
+                      <Label htmlFor="cbio">Bio</Label>
+                      <Textarea id="cbio" placeholder="A line or two about you" value={contactBio} onChange={(e) => setContactBio(e.target.value)} />
+                    </div>
+                    <Label>Links</Label>
+                    {contactLinks.map((link, i) => (
+                      <div className="row" key={i}>
+                        <Input
+                          placeholder="Label"
+                          style={{ width: "9rem" }}
+                          value={link.label}
+                          onChange={(e) =>
+                            setContactLinks(contactLinks.map((l, j) => (j === i ? { ...l, label: e.target.value } : l)))
+                          }
+                        />
+                        <Input
+                          className="grow mono"
+                          placeholder="https://"
+                          value={link.url}
+                          onChange={(e) =>
+                            setContactLinks(contactLinks.map((l, j) => (j === i ? { ...l, url: e.target.value } : l)))
+                          }
+                        />
+                        <Button
+                          data-variant="outline"
+                          data-size="sm"
+                          onClick={() => setContactLinks(contactLinks.filter((_, j) => j !== i))}
+                          disabled={contactLinks.length === 1}
+                        >
+                          Remove
+                        </Button>
+                      </div>
+                    ))}
+                    <div className="row">
+                      <Button
+                        data-variant="secondary"
+                        data-size="sm"
+                        onClick={() => setContactLinks([...contactLinks, { label: "", url: "https://" }])}
+                      >
+                        Add link
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                {kind === "file" && (
+                  <div className="stack">
+                    <input type="file" onChange={pickFile} />
+                    <span className="muted">
+                      {file !== null ? `${file.name} is ready to publish.` : "Choose a file under 5MB."}
+                    </span>
+                  </div>
+                )}
+
+                <div className="row">
+                  <Button onClick={publish} disabled={publishDisabled}>
+                    {busy === "publish" ? <Spinner data-size="sm" /> : null} Publish
+                  </Button>
+                  {keyPair === null && <span className="muted">Open the address first.</span>}
+                  {keyPair !== null && (
+                    <a href={pageUrl} target="_blank" rel="noreferrer" className="muted mono">
+                      {pageUrl}
+                    </a>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Custom domains</CardTitle>
+                <CardDescription>
+                  Connect your own domain to this page. The page stays reachable at found.as/address either way.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="stack">
+                <div className="row">
+                  <Input
+                    className="grow mono"
+                    placeholder="yourname.com"
+                    value={domainInput}
+                    onChange={(e) => setDomainInput(e.target.value)}
+                  />
+                  <Button
+                    data-variant="secondary"
+                    onClick={addDomain}
+                    disabled={busy !== null || keyPair === null || domainInput.trim() === ""}
+                  >
+                    {busy === "domain" ? <Spinner data-size="sm" /> : null} Connect domain
+                  </Button>
+                </div>
+                {keyPair === null && <span className="muted">Open the address first.</span>}
+                {domains !== null && domains.length === 0 && keyPair !== null && (
+                  <span className="muted">No domains connected.</span>
+                )}
+                {domains !== null &&
+                  domains.map((domain) => {
+                    const status = domainStatus[domain];
+                    return (
+                      <div className="stack" key={domain}>
+                        <Separator />
+                        <div className="row">
+                          <span className="mono grow">{domain}</span>
+                          {status?.mapped && status?.cert && <Badge data-variant="success">live</Badge>}
+                          {status?.certPaused && <Badge data-variant="destructive">certificate paused</Badge>}
+                          {status?.mapped && !status?.cert && <Badge data-variant="secondary">securing</Badge>}
+                          {status !== undefined && !status.mapped && <Badge data-variant="outline">waiting for DNS</Badge>}
+                          <Button data-variant="outline" data-size="sm" onClick={() => refreshDomain(domain)} disabled={busy !== null}>
+                            Check status
+                          </Button>
+                          <Button data-variant="destructive" data-size="sm" onClick={() => removeDomain(domain)} disabled={busy !== null}>
+                            Remove
+                          </Button>
+                        </div>
+                        {status !== undefined && !(status.mapped && status.cert) && status.target !== undefined && (
+                          <span className="muted mono">
+                            DNS: {status.apex ? "A/ALIAS" : "CNAME"} {domain} → {status.target}
+                            {typeof status.label === "string" && status.label !== "" ? ` · ${status.label}` : ""}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+              </CardContent>
+            </Card>
+          </div>
+        );
+      }
+
+      createRoot(document.getElementById("root")!).render(<App />);
+    </script>
+  </body>
+</html>

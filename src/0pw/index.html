@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>0pw · small-things</title>
+    <!-- Browser playground for ./index.ts (ZeroPw). Serve over HTTP so module-tsx
+         can fetch the module, e.g. `npx serve src` and open /0pw/. -->
+    <link href="https://raw.esm.sh/sheerly@0.0.5/lib/index.css" rel="stylesheet" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400&display=swap"
+      rel="stylesheet"
+    />
+    <script>
+      if (matchMedia("(prefers-color-scheme: dark)").matches) document.documentElement.classList.add("dark");
+    </script>
+    <script type="importmap">
+      {
+        "imports": {
+          "react": "https://esm.sh/react@19",
+          "react-dom": "https://esm.sh/react-dom@19",
+          "react-dom/": "https://esm.sh/react-dom@19/",
+          "sheerly": "https://esm.sh/sheerly@0.0.5?deps=react@19,react-dom@19",
+          "@noble/ed25519": "https://esm.sh/@noble/ed25519@3",
+          "@noble/hashes/sha2.js": "https://esm.sh/@noble/hashes@2/sha2.js",
+          "@noble/ciphers/salsa.js": "https://esm.sh/@noble/ciphers@2/salsa.js",
+          "cbor-x": "https://esm.sh/cbor-x@1"
+        }
+      }
+    </script>
+    <script type="module" src="https://esm.sh/module-tsx/dev"></script>
+    <style>
+      *, *::before, *::after { box-sizing: border-box; }
+      body {
+        background-color: var(--sheerly-background);
+        color: var(--sheerly-foreground);
+        font-family: var(--sheerly-font-sans);
+        margin: 0;
+      }
+      .page {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 2rem 1rem 4rem;
+        display: flex;
+        flex-direction: column;
+        gap: 1.25rem;
+      }
+      .row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+      .grow { flex: 1; min-width: 12rem; }
+      .stack { display: flex; flex-direction: column; gap: 0.75rem; }
+      .mono { font-family: var(--sheerly-font-mono); font-size: 0.8125rem; word-break: break-all; }
+      .muted { color: var(--sheerly-muted-foreground); font-size: 0.875rem; }
+      h1 { margin: 0; font-size: 1.5rem; font-weight: 600; letter-spacing: -0.02em; }
+      .header p { margin: 0.25rem 0 0; }
+      .sheerly-tabs-list { overflow-x: auto; min-width: 0; max-width: 100%; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module-tsx">
+      import { createRoot } from "react-dom/client";
+      import { useState } from "react";
+      import {
+        Alert, AlertDescription, AlertTitle, Badge, Button, Card, CardContent,
+        CardDescription, CardHeader, CardTitle, Dialog, DialogBody, DialogClose,
+        DialogFooter, DialogHeader, DialogTitle, Input, Label, Separator, Spinner,
+        Tabs, TabsList, TabsTrigger, Textarea,
+      } from "sheerly";
+      import { ZeroPw, generateKeyPair } from "./index.ts";
+      import type { Entry, KeyPair } from "./index.ts";
+      import { xsalsa20poly1305 } from "@noble/ciphers/salsa.js";
+      import { encode, decode } from "cbor-x";
+
+      const toHex = (bytes: Uint8Array): string =>
+        Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+      const fromHex = (text: string): Uint8Array => {
+        const clean = text.trim();
+        if (!/^[0-9a-f]*$/i.test(clean) || clean.length % 2 !== 0) {
+          throw new Error("expected an even-length hex string");
+        }
+        const out = new Uint8Array(clean.length / 2);
+        for (let i = 0; i < out.length; i++) out[i] = parseInt(clean.slice(2 * i, 2 * i + 2), 16);
+        return out;
+      };
+
+      // 1pw.me compatibility: the page key and the encryption key both come from
+      // PBKDF2-SHA256(password, salt "1pw.me", 100 000 rounds, 256 bits). The
+      // stored value is CBOR([nonce, secretbox(plaintext)]), exactly like 1pw.me.
+      async function deriveSeed(password: string): Promise<Uint8Array> {
+        const baseKey = await crypto.subtle.importKey(
+          "raw",
+          new TextEncoder().encode(password),
+          "PBKDF2",
+          false,
+          ["deriveBits"],
+        );
+        const bits = await crypto.subtle.deriveBits(
+          { name: "PBKDF2", hash: "SHA-256", salt: new TextEncoder().encode("1pw.me"), iterations: 100_000 },
+          baseKey,
+          256,
+        );
+        return new Uint8Array(bits);
+      }
+
+      type Notice = { variant: "destructive" | "success" | "info"; title: string; text?: string } | null;
+      type CredMode = "password" | "hex";
+
+      function App() {
+        const [credMode, setCredMode] = useState<CredMode>("password");
+        const [password, setPassword] = useState("");
+        const [client, setClient] = useState(() => new ZeroPw());
+        const [encSeed, setEncSeed] = useState<Uint8Array | null>(null);
+        const [importHex, setImportHex] = useState("");
+        const [message, setMessage] = useState("");
+        const [lookupKey, setLookupKey] = useState(() => toHex(client.keyPair.publicKey));
+        const [entry, setEntry] = useState<Entry | "missing" | null>(null);
+        const [legacy, setLegacy] = useState(false);
+        const [notice, setNotice] = useState<Notice>(null);
+        const [busy, setBusy] = useState<string | null>(null);
+
+        const publicHex = toHex(client.keyPair.publicKey);
+        const secretHex = toHex(client.keyPair.secretKey);
+        const encrypted = credMode === "password" && encSeed !== null;
+
+        async function run(label: string, fn: () => Promise<void>): Promise<void> {
+          setBusy(label);
+          setNotice(null);
+          try {
+            await fn();
+          } catch (error) {
+            setNotice({ variant: "destructive", title: "Error", text: error instanceof Error ? error.message : String(error) });
+          } finally {
+            setBusy(null);
+          }
+        }
+
+        const switchMode = (mode: CredMode) => {
+          setCredMode(mode);
+          setEncSeed(null);
+          const fresh = new ZeroPw();
+          setClient(fresh);
+          setEntry(null);
+          setLegacy(false);
+          setLookupKey(toHex(fresh.keyPair.publicKey));
+          setNotice(null);
+        };
+
+        const usePassword = () =>
+          run("key", async () => {
+            const seed = await deriveSeed(password);
+            const keyPair = generateKeyPair(seed);
+            setClient(new ZeroPw({ keyPair }));
+            setEncSeed(seed);
+            setEntry(null);
+            setLegacy(false);
+            setLookupKey(toHex(keyPair.publicKey));
+            setNotice({ variant: "success", title: "Password applied", text: "Same key and encryption as 1pw.me — the password never left this page." });
+          });
+
+        const regenerate = () => {
+          const fresh = new ZeroPw();
+          setClient(fresh);
+          setEncSeed(null);
+          setEntry(null);
+          setLookupKey(toHex(fresh.keyPair.publicKey));
+          setNotice({ variant: "info", title: "New key pair generated", text: "Store something to claim the key." });
+        };
+
+        const importKey = () =>
+          run("key", async () => {
+            const bytes = fromHex(importHex);
+            let keyPair: KeyPair;
+            if (bytes.length === 64) {
+              keyPair = { secretKey: bytes, publicKey: bytes.slice(32, 64) };
+            } else if (bytes.length === 32) {
+              keyPair = generateKeyPair(bytes);
+            } else {
+              throw new Error(`expected a 64-byte secret key or a 32-byte seed, got ${bytes.length} bytes`);
+            }
+            setClient(new ZeroPw({ keyPair }));
+            setEncSeed(null);
+            setImportHex("");
+            setEntry(null);
+            setLookupKey(toHex(keyPair.publicKey));
+            setNotice({ variant: "success", title: "Key loaded" });
+          });
+
+        const store = () =>
+          run("store", async () => {
+            let bytes: Uint8Array = new TextEncoder().encode(message);
+            if (credMode === "password") {
+              if (encSeed === null) throw new Error("apply the password first");
+              const nonce = crypto.getRandomValues(new Uint8Array(24));
+              const box = xsalsa20poly1305(encSeed, nonce).encrypt(bytes);
+              bytes = new Uint8Array(encode([nonce, box]));
+            }
+            await client.store(bytes);
+            setNotice({
+              variant: "success",
+              title: "Stored",
+              text: encrypted ? "Encrypted end-to-end, readable by 1pw.me with the same password." : `${bytes.length} bytes signed and uploaded.`,
+            });
+          });
+
+        const retrieve = () =>
+          run("retrieve", async () => {
+            const key = lookupKey.trim() === "" ? undefined : fromHex(lookupKey);
+            if (key !== undefined && key.length !== 32) throw new Error(`public key must be 32 bytes, got ${key.length}`);
+            const result = await client.retrieve(key);
+            if (result === null) {
+              setEntry("missing");
+              setNotice({ variant: "info", title: "Nothing stored under that key" });
+              return;
+            }
+            setLegacy(false);
+            if (credMode === "password") {
+              if (encSeed === null) throw new Error("apply the password first");
+              // Current 1pw.me wraps the payload as [timestamp, CBOR([nonce, box])];
+              // older pages stored CBOR([nonce, box]) without the wrapper, which
+              // surfaces here as a byte-string "timestamp".
+              const raw = result as { timestamp: unknown; message: unknown };
+              let nonce: Uint8Array;
+              let box: Uint8Array;
+              let timestamp = 0;
+              if (typeof raw.timestamp === "number") {
+                timestamp = raw.timestamp;
+                [nonce, box] = decode(raw.message as Uint8Array) as [Uint8Array, Uint8Array];
+              } else {
+                nonce = raw.timestamp as Uint8Array;
+                box = raw.message as Uint8Array;
+                setLegacy(true);
+              }
+              let plain: Uint8Array;
+              try {
+                plain = xsalsa20poly1305(encSeed, nonce).decrypt(box);
+              } catch {
+                throw new Error("Decryption failed — wrong password, or the value is not 1pw.me-encrypted.");
+              }
+              setEntry({ timestamp, message: plain });
+              if (timestamp === 0) setNotice({ variant: "info", title: "Legacy format", text: "Save once to upgrade it." });
+            } else {
+              setEntry(result);
+            }
+          });
+
+        const remove = () =>
+          run("delete", async () => {
+            await client.store(null);
+            setEntry(null);
+            setNotice({ variant: "success", title: "Deleted", text: "The value under this key is gone." });
+          });
+
+        return (
+          <div className="page">
+            <header className="header">
+              <div className="row">
+                <h1>0pw</h1>
+                <Badge data-variant="secondary">signed storage</Badge>
+              </div>
+              <p className="muted">
+                Up to 64 KiB per ed25519 key on <a href="https://0pw.me/">0pw.me</a>. With a password it behaves like{" "}
+                <a href="https://1pw.me/">1pw.me</a> — the same password derives the same key, and content is encrypted
+                end-to-end. Last write wins; storing null deletes.
+              </p>
+            </header>
+
+            {notice !== null && (
+              <Alert data-variant={notice.variant}>
+                <AlertTitle>{notice.title}</AlertTitle>
+                {notice.text !== undefined && <AlertDescription>{notice.text}</AlertDescription>}
+              </Alert>
+            )}
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Key</CardTitle>
+                <CardDescription>
+                  A password derives the key locally (PBKDF2-SHA256, 100 000 rounds), or use a raw hex key directly.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="stack">
+                <Tabs>
+                  <TabsList>
+                    <TabsTrigger data-state={credMode === "password" ? "active" : undefined} onClick={() => switchMode("password")}>
+                      Password
+                    </TabsTrigger>
+                    <TabsTrigger data-state={credMode === "hex" ? "active" : undefined} onClick={() => switchMode("hex")}>
+                      Key (hex)
+                    </TabsTrigger>
+                  </TabsList>
+                </Tabs>
+
+                {credMode === "password" ? (
+                  <div className="stack">
+                    <Label htmlFor="password">Password (same as 1pw.me)</Label>
+                    <div className="row">
+                      <Input
+                        id="password"
+                        className="grow"
+                        type="password"
+                        placeholder="your 1pw.me password"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                      />
+                      <Button data-variant="secondary" onClick={usePassword} disabled={busy !== null || password === ""}>
+                        {busy === "key" ? <Spinner data-size="sm" /> : null} Use password
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="stack">
+                    <div className="row">
+                      <Button data-variant="secondary" onClick={regenerate}>
+                        Generate new key
+                      </Button>
+                    </div>
+                    <div className="row">
+                      <Input
+                        className="grow mono"
+                        placeholder="paste a 64-byte secret key or 32-byte seed (hex)"
+                        value={importHex}
+                        onChange={(e) => setImportHex(e.target.value)}
+                      />
+                      <Button data-variant="outline" onClick={importKey} disabled={busy !== null || importHex.trim() === ""}>
+                        {busy === "key" ? <Spinner data-size="sm" /> : null} Use key
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                <Separator />
+                <div className="stack">
+                  <div className="row">
+                    <Label>Public key (hex)</Label>
+                    {encrypted && <Badge data-variant="success">encrypted like 1pw.me</Badge>}
+                  </div>
+                  <div className="mono">{publicHex}</div>
+                  {credMode === "hex" && (
+                    <div className="stack">
+                      <Label>Secret key (hex)</Label>
+                      <div className="mono">{secretHex}</div>
+                    </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Store</CardTitle>
+                <CardDescription>
+                  {encrypted
+                    ? "Encrypt with the password key and upload — the server only sees ciphertext."
+                    : "Sign a message and upload it under this key, replacing any previous value."}
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="stack">
+                <Textarea
+                  placeholder="Type a message…"
+                  value={message}
+                  onChange={(e) => setMessage(e.target.value)}
+                />
+                <div className="row">
+                  <Button onClick={store} disabled={busy !== null || message === "" || (credMode === "password" && encSeed === null)}>
+                    {busy === "store" ? <Spinner data-size="sm" /> : null} Store
+                  </Button>
+                  <Button data-variant="destructive" commandfor="$delete" command="show-modal" disabled={busy !== null || (credMode === "password" && encSeed === null)}>
+                    Delete value
+                  </Button>
+                  <Dialog id="$delete" closedby="any">
+                    <DialogClose commandfor="$delete" command="close" aria-label="Close" />
+                    <DialogHeader>
+                      <DialogTitle>Delete this value?</DialogTitle>
+                    </DialogHeader>
+                    <DialogBody>The value stored under this key is removed. There is no undo.</DialogBody>
+                    <DialogFooter>
+                      <Button data-variant="outline" commandfor="$delete" command="close">Cancel</Button>
+                      <Button data-variant="destructive" commandfor="$delete" command="close" onClick={remove}>
+                        {busy === "delete" ? <Spinner data-size="sm" /> : null} Delete
+                      </Button>
+                    </DialogFooter>
+                  </Dialog>
+                  {credMode === "password" && encSeed === null && <span className="muted">Apply the password first.</span>}
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Retrieve</CardTitle>
+                <CardDescription>
+                  {encrypted ? "Read and decrypt the value under this password's key." : "Read and verify the value under any public key."}
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="stack">
+                <div className="row">
+                  <Input
+                    className="grow mono"
+                    placeholder="public key (hex)"
+                    value={lookupKey}
+                    onChange={(e) => setLookupKey(e.target.value)}
+                  />
+                  <Button data-variant="secondary" onClick={retrieve} disabled={busy !== null || (credMode === "password" && encSeed === null)}>
+                    {busy === "retrieve" ? <Spinner data-size="sm" /> : null} Retrieve
+                  </Button>
+                </div>
+                {entry !== null && entry !== "missing" && (
+                  <div className="stack">
+                    <div className="row">
+                      <Badge data-variant="outline">{entry.message === null ? "deleted marker" : `${entry.message.length} bytes`}</Badge>
+                      {entry.timestamp > 0 && <span className="muted">{new Date(entry.timestamp * 1000).toLocaleString()}</span>}
+                      {legacy && <Badge data-variant="warning">legacy format</Badge>}
+                    </div>
+                    {entry.message !== null && (
+                      <Textarea className="mono" readOnly value={new TextDecoder().decode(entry.message)} />
+                    )}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+        );
+      }
+
+      createRoot(document.getElementById("root")!).render(<App />);
+    </script>
+  </body>
+</html>

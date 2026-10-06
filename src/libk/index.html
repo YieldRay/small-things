@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>libk · small-things</title>
+    <!-- Browser playground for ./index.ts (Libk). Serve over HTTP so module-tsx
+         can fetch the module, e.g. `npx serve src` and open /libk/. -->
+    <link href="https://raw.esm.sh/sheerly@0.0.5/lib/index.css" rel="stylesheet" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400&display=swap"
+      rel="stylesheet"
+    />
+    <script>
+      if (matchMedia("(prefers-color-scheme: dark)").matches) document.documentElement.classList.add("dark");
+    </script>
+    <script type="importmap">
+      {
+        "imports": {
+          "react": "https://esm.sh/react@19",
+          "react-dom": "https://esm.sh/react-dom@19",
+          "react-dom/": "https://esm.sh/react-dom@19/",
+          "sheerly": "https://esm.sh/sheerly@0.0.5?deps=react@19,react-dom@19"
+        }
+      }
+    </script>
+    <script type="module" src="https://esm.sh/module-tsx/dev"></script>
+    <style>
+      *, *::before, *::after { box-sizing: border-box; }
+      body {
+        background-color: var(--sheerly-background);
+        color: var(--sheerly-foreground);
+        font-family: var(--sheerly-font-sans);
+        margin: 0;
+      }
+      .page {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 2rem 1rem 4rem;
+        display: flex;
+        flex-direction: column;
+        gap: 1.25rem;
+      }
+      .row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+      .grow { flex: 1; min-width: 12rem; }
+      .stack { display: flex; flex-direction: column; gap: 0.75rem; }
+      .mono { font-family: var(--sheerly-font-mono); font-size: 0.8125rem; word-break: break-all; }
+      .muted { color: var(--sheerly-muted-foreground); font-size: 0.875rem; }
+      h1 { margin: 0; font-size: 1.5rem; font-weight: 600; letter-spacing: -0.02em; }
+      .header p { margin: 0.25rem 0 0; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module-tsx">
+      import { createRoot } from "react-dom/client";
+      import { useState } from "react";
+      import {
+        Alert, AlertDescription, AlertTitle, Badge, Button, Card, CardContent,
+        CardDescription, CardHeader, CardTitle, Dialog, DialogBody, DialogClose,
+        DialogFooter, DialogHeader, DialogTitle, Input, Label, Select, Separator,
+        Spinner, Textarea,
+      } from "sheerly";
+      import { Libk } from "./index.ts";
+
+      type Notice = { variant: "destructive" | "success" | "info"; title: string; text?: string } | null;
+
+      const ENDPOINTS = [
+        { value: "https://libk.org/", label: "libk.org (auto)" },
+        { value: "https://6.libk.org/", label: "6.libk.org (force IPv4)" },
+        { value: "https://4.libk.org/", label: "4.libk.org (force IPv6)" },
+      ];
+
+      function App() {
+        const [subdomain, setSubdomain] = useState("");
+        const [password, setPassword] = useState("");
+        const [endpoint, setEndpoint] = useState(ENDPOINTS[0]!.value);
+        const [ipsInput, setIpsInput] = useState("");
+        const [newPassword, setNewPassword] = useState("");
+        const [ips, setIps] = useState<string[] | null | undefined>(undefined);
+        const [notice, setNotice] = useState<Notice>(null);
+        const [busy, setBusy] = useState<string | null>(null);
+
+        const ready = subdomain.trim() !== "" && password !== "";
+
+        async function run(label: string, fn: (libk: Libk) => Promise<void>): Promise<void> {
+          setBusy(label);
+          setNotice(null);
+          try {
+            await fn(new Libk({ subdomain: subdomain.trim(), password, url: endpoint }));
+          } catch (error) {
+            setNotice({ variant: "destructive", title: "Error", text: error instanceof Error ? error.message : String(error) });
+          } finally {
+            setBusy(null);
+          }
+        }
+
+        const get = () =>
+          run("get", async (libk) => {
+            const result = await libk.get();
+            setIps(result);
+            if (result !== null) setIpsInput(result.join("\n"));
+            if (result === null) setNotice({ variant: "info", title: "No record", text: "The subdomain has no IPs yet — or the password is wrong for a claimed one." });
+          });
+
+        const pointAtMe = () =>
+          run("update", async (libk) => {
+            const result = await libk.update();
+            setIps(result);
+            setIpsInput(result.join("\n"));
+            setNotice({ variant: "success", title: "Record updated", text: `${subdomain}.libk.org now points at this network's IP.` });
+          });
+
+        const setIpsAction = () =>
+          run("update", async (libk) => {
+            const ips = ipsInput.split("\n").map((ip) => ip.trim()).filter((ip) => ip !== "");
+            if (ips.length === 0) throw new Error("enter at least one IP, one per line");
+            const result = await libk.update({ ips });
+            setIps(result);
+            setIpsInput(result.join("\n"));
+            setNotice({ variant: "success", title: "Record updated" });
+          });
+
+        const rotate = () =>
+          run("rotate", async (libk) => {
+            if (newPassword === "") throw new Error("enter the new password first");
+            const result = await libk.update({ newPassword });
+            setIps(result);
+            setIpsInput(result.join("\n"));
+            setPassword(newPassword);
+            setNewPassword("");
+            setNotice({ variant: "success", title: "Password rotated", text: "The password field above now holds the new password." });
+          });
+
+        const remove = () =>
+          run("delete", async (libk) => {
+            await libk.delete();
+            setIps(undefined);
+            setNotice({ variant: "success", title: "Record deleted", text: `${subdomain}.libk.org is released.` });
+          });
+
+        return (
+          <div className="page">
+            <header className="header">
+              <div className="row">
+                <h1>libk</h1>
+                <Badge data-variant="secondary">dynamic DNS</Badge>
+              </div>
+              <p className="muted">
+                Claim a <a href="https://www.libk.org/">libk.org</a> subdomain, protect it with a password, and point it
+                at one or more IPs. First come, first served — the first password to update a name owns it.
+              </p>
+            </header>
+
+            {notice !== null && (
+              <Alert data-variant={notice.variant}>
+                <AlertTitle>{notice.title}</AlertTitle>
+                {notice.text !== undefined && <AlertDescription>{notice.text}</AlertDescription>}
+              </Alert>
+            )}
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Credentials</CardTitle>
+                <CardDescription>Sent as HTTP Basic auth (subdomain:password) over HTTPS.</CardDescription>
+              </CardHeader>
+              <CardContent className="stack">
+                <div className="row">
+                  <div className="grow stack">
+                    <Label htmlFor="sub">Subdomain</Label>
+                    <Input
+                      id="sub"
+                      placeholder="my-name"
+                      value={subdomain}
+                      onChange={(e) => setSubdomain(e.target.value)}
+                    />
+                  </div>
+                  <div className="grow stack">
+                    <Label htmlFor="pw">Password</Label>
+                    <Input id="pw" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+                  </div>
+                </div>
+                <div className="stack">
+                  <Label htmlFor="newpw">New password (optional)</Label>
+                  <div className="row">
+                    <Input
+                      id="newpw"
+                      className="grow"
+                      type="password"
+                      placeholder="leave blank to keep the current one"
+                      value={newPassword}
+                      onChange={(e) => setNewPassword(e.target.value)}
+                    />
+                    <Button data-variant="outline" onClick={rotate} disabled={busy !== null || !ready || newPassword === ""}>
+                      {busy === "rotate" ? <Spinner data-size="sm" /> : null} Rotate
+                    </Button>
+                  </div>
+                </div>
+                <div className="row">
+                  <Label htmlFor="endpoint">Endpoint</Label>
+                  <Select id="endpoint" value={endpoint} onChange={(e) => setEndpoint(e.target.value)}>
+                    {ENDPOINTS.map((ep) => (
+                      <option value={ep.value}>{ep.label}</option>
+                    ))}
+                  </Select>
+                  {subdomain.trim() !== "" && (
+                    <span className="muted mono">{subdomain.trim().toLowerCase()}.libk.org</span>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Record</CardTitle>
+                <CardDescription>
+                  {ips === undefined
+                    ? "Nothing fetched yet."
+                    : ips === null
+                      ? "No record under this subdomain."
+                      : `${ips.length} IP${ips.length === 1 ? "" : "s"} on record.`}
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="stack">
+                {ips !== undefined && ips !== null && (
+                  <div className="row">
+                    {ips.map((ip) => (
+                      <Badge data-variant="secondary" className="mono">{ip}</Badge>
+                    ))}
+                  </div>
+                )}
+                <div className="row">
+                  <Button data-variant="secondary" onClick={get} disabled={busy !== null || !ready}>
+                    {busy === "get" ? <Spinner data-size="sm" /> : null} Get IPs
+                  </Button>
+                  <Button onClick={pointAtMe} disabled={busy !== null || !ready}>
+                    {busy === "update" ? <Spinner data-size="sm" /> : null} Point at my IP
+                  </Button>
+                  <Button data-variant="destructive" commandfor="$delete" command="show-modal" disabled={busy !== null || !ready}>
+                    Delete record
+                  </Button>
+                  <Dialog id="$delete" closedby="any">
+                    <DialogClose commandfor="$delete" command="close" aria-label="Close" />
+                    <DialogHeader>
+                      <DialogTitle>Delete {subdomain.trim().toLowerCase()}.libk.org?</DialogTitle>
+                    </DialogHeader>
+                    <DialogBody>The record is removed and the name is released. There is no undo.</DialogBody>
+                    <DialogFooter>
+                      <Button data-variant="outline" commandfor="$delete" command="close">Cancel</Button>
+                      <Button data-variant="destructive" commandfor="$delete" command="close" onClick={remove}>
+                        {busy === "delete" ? <Spinner data-size="sm" /> : null} Delete
+                      </Button>
+                    </DialogFooter>
+                  </Dialog>
+                </div>
+                <Separator />
+                <div className="stack">
+                  <Label htmlFor="ips">IPs (one per line)</Label>
+                  <Textarea
+                    id="ips"
+                    className="mono"
+                    placeholder={"127.0.0.1\n::1"}
+                    rows={3}
+                    value={ipsInput}
+                    onChange={(e) => setIpsInput(e.target.value)}
+                  />
+                </div>
+                <div className="row">
+                  <Button data-variant="outline" onClick={setIpsAction} disabled={busy !== null || !ready || ipsInput.trim() === ""}>
+                    Set IPs
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        );
+      }
+
+      createRoot(document.getElementById("root")!).render(<App />);
+    </script>
+  </body>
+</html>
