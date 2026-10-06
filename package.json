@@ -21,13 +21,15 @@
   "bin": {
     "0pw": "./src/0pw/cli.ts",
     "foundas": "./src/foundas/cli.ts",
-    "libk": "./src/libk/cli.ts"
+    "libk": "./src/libk/cli.ts",
+    "ccme": "./src/ccme/cli.ts"
   },
   "devDependencies": {
     "@types/node": "^26.6.4",
     "typescript": "^7.0.2"
   },
   "dependencies": {
+    "@noble/ciphers": "^2.4.0",
     "@noble/ed25519": "^3.2.0",
     "@noble/hashes": "^2.4.0",
     "cbor-x": "^1.6.6"
